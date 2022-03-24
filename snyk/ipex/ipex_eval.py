@@ -11,6 +11,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
+import torch.profiler as profiler
 import time
 from tqdm import tqdm
 from transformers import Seq2SeqTrainer
@@ -50,9 +51,8 @@ def beam_eval_loop(
     top_k_preds: List[torch.Tensor] = []
     durs = []
     with torch.no_grad():
-        for step, inputs in enumerate(tqdm(dataloader)):
-
-            #with torch.autograd.profiler.profile() as prof:
+        for step, inputs in enumerate(dataloader):
+            #with profiler.profile(activities=[profiler.ProfilerActivity.CPU]) as prof:
             #    batch_beam_output_ids = model.generate(
             #        inputs["input_ids"],
             #        attention_mask=inputs["attention_mask"],
@@ -61,9 +61,7 @@ def beam_eval_loop(
             #        early_stopping=True,
             #        num_return_sequences=num_predictions,
             #    )
-            #if prof:
-            #    print(prof.key_averages().table(sort_by='self_cpu_time_total'))
-            #    #prof.export_chrome_trace("snyk.json")
+            #print(prof.key_averages().table(sort_by='self_cpu_time_total'))
 
             t0 = time.time()
             batch_beam_output_ids = model.generate(
@@ -75,7 +73,9 @@ def beam_eval_loop(
                 num_return_sequences=num_predictions,
             )
             t1 = time.time()
-            durs.append(t1-t0)
+            decoder_time = t1 - t0
+            print('decoder time =', decoder_time)
+            durs.append(decoder_time)
 
             if batch_beam_output_ids.shape[-1] < target_max_length:
                 padded_output_ids = torch.zeros((batch_beam_output_ids.shape[0], target_max_length))
@@ -184,7 +184,9 @@ def evaluate_data(args):
     topk_accuracies: Dict[str, float] = defaultdict(float)
     num_predictions = args.num_predictions
 
-    model = trainer._wrap_model(model, training=False)
+    model = trainer._wrap_model(model, training=False).eval()
+
+    # dynamic quantization
     torch.quantization.quantize_dynamic(model, inplace=True)
     if args.ipex:
         import intel_extension_for_pytorch as ipex
