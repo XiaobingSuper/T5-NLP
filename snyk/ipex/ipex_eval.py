@@ -126,6 +126,7 @@ def evaluate_data(args):
         include_warning=True,
         model_name=args.model_name,
     )
+    '''
     train_dataset = prepare_data.create_dataset(
         dataset.train_inputs,
         dataset.train_labels,
@@ -135,6 +136,22 @@ def evaluate_data(args):
     )
     val_dataset = prepare_data.create_dataset(
         dataset.val_inputs, dataset.val_labels, tokenizer, pad_truncate=True
+    )
+    '''
+    # for new transformert, train, val dataste should not be None
+    input_sequence = "HuggingFace is a company"
+    output_sequence = "HuggingFace est une entreprise"
+
+    train_dataset = prepare_data.create_dataset(
+        input_sequence,
+        output_sequence,
+        tokenizer,
+        pad_truncate=True,
+        max_length=256,
+    )
+    
+    val_dataset = prepare_data.create_dataset(
+        input_sequence, output_sequence, tokenizer, pad_truncate=True
     )
 
     print("Creating Trainer")
@@ -184,8 +201,8 @@ def evaluate_data(args):
     topk_accuracies: Dict[str, float] = defaultdict(float)
     num_predictions = args.num_predictions
 
-    model = trainer._wrap_model(model, training=False).eval()
-
+    # model = trainer._wrap_model(model, training=False).eval()
+    model.eval()
     # dynamic quantization
     torch.quantization.quantize_dynamic(model, inplace=True)
     if args.ipex:
