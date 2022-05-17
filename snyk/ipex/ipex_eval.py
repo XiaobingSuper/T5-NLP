@@ -22,9 +22,14 @@ from transformers import set_seed
 from utils import auxiliary
 from utils import data_reader
 from utils import prepare_data
-
+from transformers.models.t5.configuration_t5 import T5Config
+import torchdynamo
+from typing import List
 set_seed(42)
 
+def my_compiler(gm: torch.fx.GraphModule, example_inputs: List[torch.Tensor]):
+    scripted = torch.jit.trace(gm, example_inputs)
+    return scripted
 
 def check_input_alignment(dataset: prepare_data.SplittedDataSetWithWarningIds):
     for warning in dataset.test_inputs:
@@ -64,6 +69,7 @@ def beam_eval_loop(
             #print(prof.key_averages().table(sort_by='self_cpu_time_total'))
 
             t0 = time.time()
+            #print(inputs["input_ids"])
             batch_beam_output_ids = model.generate(
                 inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
@@ -104,6 +110,7 @@ def beam_eval_loop(
         top_k_preds_np, target_max_length - 1, 0, axis=1
     )  # pad back at the end
 
+    print('dur: {:.2f}ms'.format(sum(durs)/len(durs)*1000))
     return top_1_preds_np, top_k_preds_np, sum(durs)/len(durs)
 
 
@@ -202,9 +209,95 @@ def evaluate_data(args):
     num_predictions = args.num_predictions
 
     # model = trainer._wrap_model(model, training=False).eval()
+    input_ids = tokenizer("The <extra_id_0> walks in <extra_id_1> park", return_tensors="pt").input_ids
+    labels = tokenizer("<extra_id_0> cute dog <extra_id_1> the <extra_id_2>", return_tensors="pt").input_ids
     model.eval()
+    '''
+    from transformers.modeling_fx_utils import symbolic_trace
+    traced_model = symbolic_trace(
+            model,
+            input_names=["input_ids", "attention_mask", "token_type_ids"],
+            batch_size=1,
+            sequence_length=128,
+        )
+    print(model)
+    exit
+    '''
     # dynamic quantization
+    #model = torch.jit.script(model.eval())
+    import models_utils
+    '''
+    for idx in range(len(model.encoder.block)):
+        config = T5Config()
+        attention = model.encoder.block[idx].layer[0].SelfAttention
+        config.is_decoder = attention.is_decoder
+        config.relative_attention_num_buckets = attention.relative_attention_num_buckets 
+        config.relative_attention_max_distance = attention.relative_attention_max_distance 
+        config.d_model = attention.d_model 
+        config.d_kv = attention.key_value_proj_dim
+        config.num_heads = attention.n_heads
+        config.dropout_rate = attention.dropout
+        attention_opti = models_utils.T5Attention(config, attention.has_relative_attention_bias)
+                
+        attention_opti.q = attention.q 
+        attention_opti.k = attention.k
+        attention_opti.v =  attention.v
+        attention_opti.o =  attention.o
+        attention_opti.qkv.weight.data = torch.cat([attention_opti.q.weight, attention_opti.k.weight, attention_opti.v.weight])
+        if attention_opti.q.bias is not None:
+            attention_opti.qkv.bias.data = torch.cat([attention_opti.q.bias, attention_opti.k.bias, attention_opti.v.bias])
+        if attention.has_relative_attention_bias:
+            attention_opti.relative_attention_bias = attention.relative_attention_bias
+        attention_opti.pruned_heads = attention.pruned_heads
+        attention_opti.gradient_checkpointing = attention.gradient_checkpointing
+
+        model.encoder.block[idx].layer[0].SelfAttention = attention_opti
+
+        # fused layer_norm
+        for j in range(2):
+            layer_norm =  model.encoder.block[idx].layer[j].layer_norm
+            hidden_size = layer_norm.weight.size(0)
+            fused_layer_norm = models_utils.T5LayerNorm(hidden_size, layer_norm.variance_epsilon)
+            fused_layer_norm.weight.data = layer_norm.weight.data.clone()
+            model.encoder.block[idx].layer[j].layer_norm = fused_layer_norm
+    # decoder
+    for idx in range(len(model.decoder.block)):
+        config = T5Config()
+        attention = model.decoder.block[idx].layer[0].SelfAttention
+        config.is_decoder = attention.is_decoder
+        config.relative_attention_num_buckets = attention.relative_attention_num_buckets 
+        config.relative_attention_max_distance = attention.relative_attention_max_distance 
+        config.d_model = attention.d_model 
+        config.d_kv = attention.key_value_proj_dim
+        config.num_heads = attention.n_heads
+        config.dropout_rate = attention.dropout
+        attention_opti = models_utils.T5Attention(config, attention.has_relative_attention_bias)
+                
+        attention_opti.q = attention.q 
+        attention_opti.k = attention.k
+        attention_opti.v =  attention.v
+        attention_opti.o =  attention.o
+        attention_opti.qkv.weight.data = torch.cat([attention_opti.q.weight, attention_opti.k.weight, attention_opti.v.weight])
+        if attention_opti.q.bias is not None:
+            attention_opti.qkv.bias.data = torch.cat([attention_opti.q.bias, attention_opti.k.bias, attention_opti.v.bias])
+        if attention.has_relative_attention_bias:
+            attention_opti.relative_attention_bias = attention.relative_attention_bias
+        attention_opti.pruned_heads = attention.pruned_heads
+        attention_opti.gradient_checkpointing = attention.gradient_checkpointing
+
+        model.decoder.block[idx].layer[0].SelfAttention = attention_opti
+        
+        # fused layer_norm
+        for j in range(3):
+            layer_norm =  model.decoder.block[idx].layer[j].layer_norm
+            hidden_size = layer_norm.weight.size(0)
+            fused_layer_norm = models_utils.T5LayerNorm(hidden_size, layer_norm.variance_epsilon)
+            fused_layer_norm.weight.data = layer_norm.weight.data.clone()
+            model.decoder.block[idx].layer[j].layer_norm = fused_layer_norm
+
+    '''
     torch.quantization.quantize_dynamic(model, inplace=True)
+
     if args.ipex:
         import intel_extension_for_pytorch as ipex
         model = ipex.optimize(model)
@@ -253,7 +346,7 @@ def evaluate_data(args):
             num_predictions=args.num_predictions,
             target_max_length=target_max_length,
         )
-
+        exit()
         durs.append(dur)
         correct_counter += int(np.sum(np.all(np.equal(target_ids, top_1_preds), axis=1)))
         total_counter += len(top_1_preds)
