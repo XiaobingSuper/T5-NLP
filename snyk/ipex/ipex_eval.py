@@ -226,7 +226,6 @@ def evaluate_data(args):
     # dynamic quantization
     #model = torch.jit.script(model.eval())
     import models_utils
-    '''
     for idx in range(len(model.encoder.block)):
         config = T5Config()
         attention = model.encoder.block[idx].layer[0].SelfAttention
@@ -252,7 +251,7 @@ def evaluate_data(args):
         attention_opti.gradient_checkpointing = attention.gradient_checkpointing
 
         model.encoder.block[idx].layer[0].SelfAttention = attention_opti
-
+        '''
         # fused layer_norm
         for j in range(2):
             layer_norm =  model.encoder.block[idx].layer[j].layer_norm
@@ -260,6 +259,7 @@ def evaluate_data(args):
             fused_layer_norm = models_utils.T5LayerNorm(hidden_size, layer_norm.variance_epsilon)
             fused_layer_norm.weight.data = layer_norm.weight.data.clone()
             model.encoder.block[idx].layer[j].layer_norm = fused_layer_norm
+        '''
     # decoder
     for idx in range(len(model.decoder.block)):
         config = T5Config()
@@ -286,7 +286,7 @@ def evaluate_data(args):
         attention_opti.gradient_checkpointing = attention.gradient_checkpointing
 
         model.decoder.block[idx].layer[0].SelfAttention = attention_opti
-        
+        '''
         # fused layer_norm
         for j in range(3):
             layer_norm =  model.decoder.block[idx].layer[j].layer_norm
@@ -295,7 +295,7 @@ def evaluate_data(args):
             fused_layer_norm.weight.data = layer_norm.weight.data.clone()
             model.decoder.block[idx].layer[j].layer_norm = fused_layer_norm
 
-    '''
+        '''
     torch.quantization.quantize_dynamic(model, inplace=True)
 
     if args.ipex:
