@@ -55,19 +55,46 @@ def beam_eval_loop(
     top_1_preds: List[torch.Tensor] = []
     top_k_preds: List[torch.Tensor] = []
     durs = []
+    from torch.ao.quantization import MinMaxObserver, PerChannelMinMaxObserver, QConfig, PlaceholderObserver
+    from intel_extension_for_pytorch.quantization import prepare, convert
+    qconfig = QConfig(activation=MinMaxObserver.with_args(qscheme=torch.per_tensor_affine, dtype=torch.quint8),
+            weight=PerChannelMinMaxObserver.with_args(dtype=torch.qint8, qscheme=torch.per_channel_symmetric))
+    import intel_extension_for_pytorch as ipex
+    '''  
+    #ipex.enable_onednn_fusion(False)
+    qconfig = QConfig(
+        activation = PlaceholderObserver.with_args(dtype=torch.float, compute_dtype=torch.quint8),
+        weight = MinMaxObserver.with_args(dtype=torch.qint8, qscheme=torch.per_tensor_symmetric))
     with torch.no_grad():
         for step, inputs in enumerate(dataloader):
-            #with profiler.profile(activities=[profiler.ProfilerActivity.CPU]) as prof:
-            #    batch_beam_output_ids = model.generate(
-            #        inputs["input_ids"],
-            #        attention_mask=inputs["attention_mask"],
-            #        max_length=target_max_length,
-            #        num_beams=num_beams,
-            #        early_stopping=True,
-            #        num_return_sequences=num_predictions,
-            #    )
-            #print(prof.key_averages().table(sort_by='self_cpu_time_total'))
+            import pdb
+            #batch_beam_output_ids = model.generate(inputs["input_ids"], attention_mask=inputs["attention_mask"], max_length=target_max_length, num_beams=num_beams, early_stopping=True, num_return_sequences=num_predictions)
+           
+            model = prepare(model, qconfig, example_inputs=torch.randn(2, 3))
+           
+            pdb.set_trace()
+            batch_beam_output_ids = model.generate(inputs["input_ids"], attention_mask=inputs["attention_mask"], max_length=target_max_length, num_beams=num_beams, early_stopping=True, num_return_sequences=num_predictions)
+            pdb.set_trace()
+            model = convert(model)
+            model.generate(inputs["input_ids"], attention_mask=inputs["attention_mask"], max_length=target_max_length, num_beams=num_beams, early_stopping=True, num_return_sequences=num_predictions)
 
+            break
+        exit()
+    '''
+    with torch.no_grad():
+        for step, inputs in enumerate(dataloader):
+            '''
+            with profiler.profile(activities=[profiler.ProfilerActivity.CPU]) as prof:
+                batch_beam_output_ids = model.generate(
+                    inputs["input_ids"],
+                    attention_mask=inputs["attention_mask"],
+                    max_length=target_max_length,
+                    num_beams=num_beams,
+                    early_stopping=True,
+                    num_return_sequences=num_predictions,
+                )
+            print(prof.key_averages().table(sort_by='self_cpu_time_total'))
+            '''
             t0 = time.time()
             #print(inputs["input_ids"])
             batch_beam_output_ids = model.generate(
@@ -118,8 +145,12 @@ def evaluate_data(args):
     data_test = data_reader.get_data_from_paths(args.data_files_test)
     print("Running from Hugginface checkpoint directory")
     tokenizer = T5Tokenizer.from_pretrained(args.load_model_dir)
+    import pdb
+    pdb.set_trace()
+   
     model = T5ForConditionalGeneration.from_pretrained(args.load_model_dir)
 
+    print(model)
     if args.error_types:
         all_warning_types = args.error_types
     else:
@@ -212,21 +243,10 @@ def evaluate_data(args):
     input_ids = tokenizer("The <extra_id_0> walks in <extra_id_1> park", return_tensors="pt").input_ids
     labels = tokenizer("<extra_id_0> cute dog <extra_id_1> the <extra_id_2>", return_tensors="pt").input_ids
     model.eval()
-    '''
-    from transformers.modeling_fx_utils import symbolic_trace
-    traced_model = symbolic_trace(
-            model,
-            input_names=["input_ids", "attention_mask", "token_type_ids"],
-            batch_size=1,
-            sequence_length=128,
-        )
-    print(model)
-    exit
-    '''
+    
     # dynamic quantization
     #model = torch.jit.script(model.eval())
     import models_utils
-    '''
     for idx in range(len(model.encoder.block)):
         config = T5Config()
         attention = model.encoder.block[idx].layer[0].SelfAttention
@@ -252,14 +272,15 @@ def evaluate_data(args):
         attention_opti.gradient_checkpointing = attention.gradient_checkpointing
 
         model.encoder.block[idx].layer[0].SelfAttention = attention_opti
-
         # fused layer_norm
+        '''
         for j in range(2):
             layer_norm =  model.encoder.block[idx].layer[j].layer_norm
             hidden_size = layer_norm.weight.size(0)
             fused_layer_norm = models_utils.T5LayerNorm(hidden_size, layer_norm.variance_epsilon)
             fused_layer_norm.weight.data = layer_norm.weight.data.clone()
             model.encoder.block[idx].layer[j].layer_norm = fused_layer_norm
+        '''
     # decoder
     for idx in range(len(model.decoder.block)):
         config = T5Config()
@@ -286,7 +307,7 @@ def evaluate_data(args):
         attention_opti.gradient_checkpointing = attention.gradient_checkpointing
 
         model.decoder.block[idx].layer[0].SelfAttention = attention_opti
-        
+        '''
         # fused layer_norm
         for j in range(3):
             layer_norm =  model.decoder.block[idx].layer[j].layer_norm
@@ -294,13 +315,14 @@ def evaluate_data(args):
             fused_layer_norm = models_utils.T5LayerNorm(hidden_size, layer_norm.variance_epsilon)
             fused_layer_norm.weight.data = layer_norm.weight.data.clone()
             model.decoder.block[idx].layer[j].layer_norm = fused_layer_norm
+        '''
+    #torch.quantization.quantize_dynamic(model, inplace=True)
 
     '''
-    torch.quantization.quantize_dynamic(model, inplace=True)
-
     if args.ipex:
         import intel_extension_for_pytorch as ipex
         model = ipex.optimize(model)
+    '''
     model.eval()
 
     durs = []
